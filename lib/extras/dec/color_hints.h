@@ -10,11 +10,11 @@
 // information into the file, and those that support it may not have it.
 // To allow attaching color information to those file formats the caller can
 // define these color hints.
-
-#include <stddef.h>
-#include <stdint.h>
+// Besides color space information, 'ColorHints' may also include other
+// additional information such as Exif, XMP and JUMBF metadata.
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "lib/extras/packed_image.h"

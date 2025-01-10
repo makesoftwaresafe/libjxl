@@ -3,12 +3,10 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-#include <stdlib.h>
+#include <cstdlib>
 
-#include <algorithm>
-
-#include "gtest/gtest.h"
 #include "lib/jxl/enc_gamma_correct.h"
+#include "lib/jxl/testing.h"
 
 namespace jxl {
 namespace {

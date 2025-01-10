@@ -6,10 +6,13 @@
 #ifndef LIB_JXL_MODULAR_ENCODING_ENC_MA_H_
 #define LIB_JXL_MODULAR_ENCODING_ENC_MA_H_
 
-#include <numeric>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
+#include "lib/jxl/base/status.h"
 #include "lib/jxl/enc_ans.h"
-#include "lib/jxl/entropy_coder.h"
 #include "lib/jxl/modular/encoding/dec_ma.h"
 #include "lib/jxl/modular/modular_image.h"
 #include "lib/jxl/modular/options.h"
@@ -53,7 +56,7 @@ struct TreeSamples {
     return props[property_index][i];
   }
   int UnquantizeProperty(size_t property_index, uint32_t quant) const {
-    JXL_ASSERT(quant < compact_properties[property_index].size());
+    JXL_DASSERT(quant < compact_properties[property_index].size());
     return compact_properties[property_index][quant];
   }
 
@@ -70,7 +73,7 @@ struct TreeSamples {
 
   // Preallocate data for a given number of samples. MUST be called before
   // adding any sample.
-  void PrepareForSamples(size_t num_samples);
+  void PrepareForSamples(size_t extra_num_samples);
   // Add a sample.
   void AddSample(pixel_type_w pixel, const Properties &properties,
                  const pixel_type_w *predictions);
@@ -132,26 +135,26 @@ struct TreeSamples {
   bool IsSameSample(size_t a, size_t b) const;
   size_t Hash1(size_t a) const;
   size_t Hash2(size_t a) const;
-  void InitTable(size_t size);
+  void InitTable(size_t log_size);
   // Returns true if `a` was already present in the table.
   bool AddToTableAndMerge(size_t a);
   void AddToTable(size_t a);
 };
 
-void TokenizeTree(const Tree &tree, std::vector<Token> *tokens,
-                  Tree *decoder_tree);
+Status TokenizeTree(const Tree &tree, std::vector<Token> *tokens,
+                    Tree *decoder_tree);
 
 void CollectPixelSamples(const Image &image, const ModularOptions &options,
-                         size_t group_id,
+                         uint32_t group_id,
                          std::vector<uint32_t> &group_pixel_count,
                          std::vector<uint32_t> &channel_pixel_count,
                          std::vector<pixel_type> &pixel_samples,
                          std::vector<pixel_type> &diff_samples);
 
-void ComputeBestTree(TreeSamples &tree_samples, float threshold,
-                     const std::vector<ModularMultiplierInfo> &mul_info,
-                     StaticPropRange static_prop_range,
-                     float fast_decode_multiplier, Tree *tree);
+Status ComputeBestTree(TreeSamples &tree_samples, float threshold,
+                       const std::vector<ModularMultiplierInfo> &mul_info,
+                       StaticPropRange static_prop_range,
+                       float fast_decode_multiplier, Tree *tree);
 
 }  // namespace jxl
 #endif  // LIB_JXL_MODULAR_ENCODING_ENC_MA_H_

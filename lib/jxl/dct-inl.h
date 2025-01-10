@@ -5,6 +5,11 @@
 
 // Fast SIMD floating-point (I)DCT, any power of two.
 
+#include <type_traits>
+
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/status.h"
+
 #if defined(LIB_JXL_DCT_INL_H_) == defined(HWY_TARGET_TOGGLE)
 #ifdef LIB_JXL_DCT_INL_H_
 #undef LIB_JXL_DCT_INL_H_
@@ -12,8 +17,7 @@
 #define LIB_JXL_DCT_INL_H_
 #endif
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <hwy/highway.h>
 
 #include "lib/jxl/dct_block-inl.h"
@@ -31,120 +35,124 @@ using hwy::HWY_NAMESPACE::MulAdd;
 using hwy::HWY_NAMESPACE::NegMulAdd;
 using hwy::HWY_NAMESPACE::Sub;
 
-template <size_t SZ>
-struct FVImpl {
-  using type = HWY_CAPPED(float, SZ);
-};
-
-template <>
-struct FVImpl<0> {
-  using type = HWY_FULL(float);
-};
-
-template <size_t SZ>
-using FV = typename FVImpl<SZ>::type;
+#if !HWY_HAVE_SCALABLE
+// OK to use MaxLanes for non-scalable; should be same as Lanes.
+constexpr size_t kMaxLanes = MaxLanes(HWY_FULL(float)());
+#else
+#endif
 
 // Implementation of Lowest Complexity Self Recursive Radix-2 DCT II/III
 // Algorithms, by Siriani M. Perera and Jianhua Liu.
 
 template <size_t N, size_t SZ>
 struct CoeffBundle {
-  static void AddReverse(const float* JXL_RESTRICT ain1,
-                         const float* JXL_RESTRICT ain2,
-                         float* JXL_RESTRICT aout) {
+  using D = HWY_CAPPED(float, SZ);
+  static void AddReverse(const float* JXL_RESTRICT a_in1,
+                         const float* JXL_RESTRICT a_in2,
+                         float* JXL_RESTRICT a_out) {
+    const D d;
     for (size_t i = 0; i < N; i++) {
-      auto in1 = Load(FV<SZ>(), ain1 + i * SZ);
-      auto in2 = Load(FV<SZ>(), ain2 + (N - i - 1) * SZ);
-      Store(Add(in1, in2), FV<SZ>(), aout + i * SZ);
+      auto in1 = Load(d, a_in1 + i * SZ);
+      auto in2 = Load(d, a_in2 + (N - i - 1) * SZ);
+      Store(Add(in1, in2), d, a_out + i * SZ);
     }
   }
-  static void SubReverse(const float* JXL_RESTRICT ain1,
-                         const float* JXL_RESTRICT ain2,
-                         float* JXL_RESTRICT aout) {
+  static void SubReverse(const float* JXL_RESTRICT a_in1,
+                         const float* JXL_RESTRICT a_in2,
+                         float* JXL_RESTRICT a_out) {
+    const D d;
     for (size_t i = 0; i < N; i++) {
-      auto in1 = Load(FV<SZ>(), ain1 + i * SZ);
-      auto in2 = Load(FV<SZ>(), ain2 + (N - i - 1) * SZ);
-      Store(Sub(in1, in2), FV<SZ>(), aout + i * SZ);
+      auto in1 = Load(d, a_in1 + i * SZ);
+      auto in2 = Load(d, a_in2 + (N - i - 1) * SZ);
+      Store(Sub(in1, in2), d, a_out + i * SZ);
     }
   }
   static void B(float* JXL_RESTRICT coeff) {
-    auto sqrt2 = Set(FV<SZ>(), kSqrt2);
-    auto in1 = Load(FV<SZ>(), coeff);
-    auto in2 = Load(FV<SZ>(), coeff + SZ);
-    Store(MulAdd(in1, sqrt2, in2), FV<SZ>(), coeff);
+    const D d;
+    auto sqrt2 = Set(d, kSqrt2);
+    auto in1_0 = Load(d, coeff);
+    auto in2_0 = Load(d, coeff + SZ);
+    Store(MulAdd(in1_0, sqrt2, in2_0), d, coeff);
     for (size_t i = 1; i + 1 < N; i++) {
-      auto in1 = Load(FV<SZ>(), coeff + i * SZ);
-      auto in2 = Load(FV<SZ>(), coeff + (i + 1) * SZ);
-      Store(Add(in1, in2), FV<SZ>(), coeff + i * SZ);
+      auto in1 = Load(d, coeff + i * SZ);
+      auto in2 = Load(d, coeff + (i + 1) * SZ);
+      Store(Add(in1, in2), d, coeff + i * SZ);
     }
   }
   static void BTranspose(float* JXL_RESTRICT coeff) {
+    const D d;
     for (size_t i = N - 1; i > 0; i--) {
-      auto in1 = Load(FV<SZ>(), coeff + i * SZ);
-      auto in2 = Load(FV<SZ>(), coeff + (i - 1) * SZ);
-      Store(Add(in1, in2), FV<SZ>(), coeff + i * SZ);
+      auto in1 = Load(d, coeff + i * SZ);
+      auto in2 = Load(d, coeff + (i - 1) * SZ);
+      Store(Add(in1, in2), d, coeff + i * SZ);
     }
-    auto sqrt2 = Set(FV<SZ>(), kSqrt2);
-    auto in1 = Load(FV<SZ>(), coeff);
-    Store(Mul(in1, sqrt2), FV<SZ>(), coeff);
+    auto sqrt2 = Set(d, kSqrt2);
+    auto in1 = Load(d, coeff);
+    Store(Mul(in1, sqrt2), d, coeff);
   }
   // Ideally optimized away by compiler (except the multiply).
-  static void InverseEvenOdd(const float* JXL_RESTRICT ain,
-                             float* JXL_RESTRICT aout) {
+  static void InverseEvenOdd(const float* JXL_RESTRICT a_in,
+                             float* JXL_RESTRICT a_out) {
+    const D d;
     for (size_t i = 0; i < N / 2; i++) {
-      auto in1 = Load(FV<SZ>(), ain + i * SZ);
-      Store(in1, FV<SZ>(), aout + 2 * i * SZ);
+      auto in1 = Load(d, a_in + i * SZ);
+      Store(in1, d, a_out + 2 * i * SZ);
     }
     for (size_t i = N / 2; i < N; i++) {
-      auto in1 = Load(FV<SZ>(), ain + i * SZ);
-      Store(in1, FV<SZ>(), aout + (2 * (i - N / 2) + 1) * SZ);
+      auto in1 = Load(d, a_in + i * SZ);
+      Store(in1, d, a_out + (2 * (i - N / 2) + 1) * SZ);
     }
   }
   // Ideally optimized away by compiler.
-  static void ForwardEvenOdd(const float* JXL_RESTRICT ain, size_t ain_stride,
-                             float* JXL_RESTRICT aout) {
+  static void ForwardEvenOdd(const float* JXL_RESTRICT a_in, size_t a_in_stride,
+                             float* JXL_RESTRICT a_out) {
+    const D d;
     for (size_t i = 0; i < N / 2; i++) {
-      auto in1 = LoadU(FV<SZ>(), ain + 2 * i * ain_stride);
-      Store(in1, FV<SZ>(), aout + i * SZ);
+      auto in1 = LoadU(d, a_in + 2 * i * a_in_stride);
+      Store(in1, d, a_out + i * SZ);
     }
     for (size_t i = N / 2; i < N; i++) {
-      auto in1 = LoadU(FV<SZ>(), ain + (2 * (i - N / 2) + 1) * ain_stride);
-      Store(in1, FV<SZ>(), aout + i * SZ);
+      auto in1 = LoadU(d, a_in + (2 * (i - N / 2) + 1) * a_in_stride);
+      Store(in1, d, a_out + i * SZ);
     }
   }
   // Invoked on full vector.
   static void Multiply(float* JXL_RESTRICT coeff) {
+    const D d;
     for (size_t i = 0; i < N / 2; i++) {
-      auto in1 = Load(FV<SZ>(), coeff + (N / 2 + i) * SZ);
-      auto mul = Set(FV<SZ>(), WcMultipliers<N>::kMultipliers[i]);
-      Store(Mul(in1, mul), FV<SZ>(), coeff + (N / 2 + i) * SZ);
+      auto in1 = Load(d, coeff + (N / 2 + i) * SZ);
+      auto mul = Set(d, WcMultipliers<N>::kMultipliers[i]);
+      Store(Mul(in1, mul), d, coeff + (N / 2 + i) * SZ);
     }
   }
   static void MultiplyAndAdd(const float* JXL_RESTRICT coeff,
                              float* JXL_RESTRICT out, size_t out_stride) {
+    const D d;
     for (size_t i = 0; i < N / 2; i++) {
-      auto mul = Set(FV<SZ>(), WcMultipliers<N>::kMultipliers[i]);
-      auto in1 = Load(FV<SZ>(), coeff + i * SZ);
-      auto in2 = Load(FV<SZ>(), coeff + (N / 2 + i) * SZ);
+      auto mul = Set(d, WcMultipliers<N>::kMultipliers[i]);
+      auto in1 = Load(d, coeff + i * SZ);
+      auto in2 = Load(d, coeff + (N / 2 + i) * SZ);
       auto out1 = MulAdd(mul, in2, in1);
       auto out2 = NegMulAdd(mul, in2, in1);
-      StoreU(out1, FV<SZ>(), out + i * out_stride);
-      StoreU(out2, FV<SZ>(), out + (N - i - 1) * out_stride);
+      StoreU(out1, d, out + i * out_stride);
+      StoreU(out2, d, out + (N - i - 1) * out_stride);
     }
   }
   template <typename Block>
   static void LoadFromBlock(const Block& in, size_t off,
                             float* JXL_RESTRICT coeff) {
+    const D d;
     for (size_t i = 0; i < N; i++) {
-      Store(in.LoadPart(FV<SZ>(), i, off), FV<SZ>(), coeff + i * SZ);
+      Store(in.LoadPart(d, i, off), d, coeff + i * SZ);
     }
   }
   template <typename Block>
   static void StoreToBlockAndScale(const float* JXL_RESTRICT coeff,
                                    const Block& out, size_t off) {
-    auto mul = Set(FV<SZ>(), 1.0f / N);
+    const D d;
+    auto mul = Set(d, 1.0f / N);
     for (size_t i = 0; i < N; i++) {
-      out.StorePart(FV<SZ>(), Mul(mul, Load(FV<SZ>(), coeff + i * SZ)), i, off);
+      out.StorePart(d, Mul(mul, Load(d, coeff + i * SZ)), i, off);
     }
   }
 };
@@ -154,29 +162,29 @@ struct DCT1DImpl;
 
 template <size_t SZ>
 struct DCT1DImpl<1, SZ> {
-  JXL_INLINE void operator()(float* JXL_RESTRICT mem) {}
+  JXL_INLINE void operator()(float* JXL_RESTRICT mem, float* /* tmp */) {}
 };
 
 template <size_t SZ>
 struct DCT1DImpl<2, SZ> {
-  JXL_INLINE void operator()(float* JXL_RESTRICT mem) {
-    auto in1 = Load(FV<SZ>(), mem);
-    auto in2 = Load(FV<SZ>(), mem + SZ);
-    Store(Add(in1, in2), FV<SZ>(), mem);
-    Store(Sub(in1, in2), FV<SZ>(), mem + SZ);
+  using D = HWY_CAPPED(float, SZ);
+  JXL_INLINE void operator()(float* JXL_RESTRICT mem, float* /* tmp */) {
+    const D d;
+    auto in1 = Load(d, mem);
+    auto in2 = Load(d, mem + SZ);
+    Store(Add(in1, in2), d, mem);
+    Store(Sub(in1, in2), d, mem + SZ);
   }
 };
 
 template <size_t N, size_t SZ>
 struct DCT1DImpl {
-  void operator()(float* JXL_RESTRICT mem) {
-    // This is relatively small (4kB with 64-DCT and AVX-512)
-    HWY_ALIGN float tmp[N * SZ];
+  void operator()(float* JXL_RESTRICT mem, float* JXL_RESTRICT tmp) {
     CoeffBundle<N / 2, SZ>::AddReverse(mem, mem + N / 2 * SZ, tmp);
-    DCT1DImpl<N / 2, SZ>()(tmp);
+    DCT1DImpl<N / 2, SZ>()(tmp, tmp + N * SZ);
     CoeffBundle<N / 2, SZ>::SubReverse(mem, mem + N / 2 * SZ, tmp + N / 2 * SZ);
     CoeffBundle<N, SZ>::Multiply(tmp);
-    DCT1DImpl<N / 2, SZ>()(tmp + N / 2 * SZ);
+    DCT1DImpl<N / 2, SZ>()(tmp + N / 2 * SZ, tmp + N * SZ);
     CoeffBundle<N / 2, SZ>::B(tmp + N / 2 * SZ);
     CoeffBundle<N, SZ>::InverseEvenOdd(tmp, mem);
   }
@@ -187,96 +195,158 @@ struct IDCT1DImpl;
 
 template <size_t SZ>
 struct IDCT1DImpl<1, SZ> {
+  using D = HWY_CAPPED(float, SZ);
   JXL_INLINE void operator()(const float* from, size_t from_stride, float* to,
-                             size_t to_stride) {
-    StoreU(LoadU(FV<SZ>(), from), FV<SZ>(), to);
+                             size_t to_stride, float* JXL_RESTRICT /* tmp */) {
+    const D d;
+    StoreU(LoadU(d, from), d, to);
   }
 };
 
 template <size_t SZ>
 struct IDCT1DImpl<2, SZ> {
+  using D = HWY_CAPPED(float, SZ);
   JXL_INLINE void operator()(const float* from, size_t from_stride, float* to,
-                             size_t to_stride) {
+                             size_t to_stride, float* JXL_RESTRICT /* tmp */) {
+    const D d;
     JXL_DASSERT(from_stride >= SZ);
     JXL_DASSERT(to_stride >= SZ);
-    auto in1 = LoadU(FV<SZ>(), from);
-    auto in2 = LoadU(FV<SZ>(), from + from_stride);
-    StoreU(Add(in1, in2), FV<SZ>(), to);
-    StoreU(Sub(in1, in2), FV<SZ>(), to + to_stride);
+    auto in1 = LoadU(d, from);
+    auto in2 = LoadU(d, from + from_stride);
+    StoreU(Add(in1, in2), d, to);
+    StoreU(Sub(in1, in2), d, to + to_stride);
   }
 };
 
 template <size_t N, size_t SZ>
 struct IDCT1DImpl {
   void operator()(const float* from, size_t from_stride, float* to,
-                  size_t to_stride) {
+                  size_t to_stride, float* JXL_RESTRICT tmp) {
     JXL_DASSERT(from_stride >= SZ);
     JXL_DASSERT(to_stride >= SZ);
-    // This is relatively small (4kB with 64-DCT and AVX-512)
-    HWY_ALIGN float tmp[N * SZ];
     CoeffBundle<N, SZ>::ForwardEvenOdd(from, from_stride, tmp);
-    IDCT1DImpl<N / 2, SZ>()(tmp, SZ, tmp, SZ);
+    IDCT1DImpl<N / 2, SZ>()(tmp, SZ, tmp, SZ, tmp + N * SZ);
     CoeffBundle<N / 2, SZ>::BTranspose(tmp + N / 2 * SZ);
-    IDCT1DImpl<N / 2, SZ>()(tmp + N / 2 * SZ, SZ, tmp + N / 2 * SZ, SZ);
+    IDCT1DImpl<N / 2, SZ>()(tmp + N / 2 * SZ, SZ, tmp + N / 2 * SZ, SZ,
+                            tmp + N * SZ);
     CoeffBundle<N, SZ>::MultiplyAndAdd(tmp, to, to_stride);
   }
 };
 
-template <size_t N, size_t M_or_0, typename FromBlock, typename ToBlock>
-void DCT1DWrapper(const FromBlock& from, const ToBlock& to, size_t Mp) {
-  size_t M = M_or_0 != 0 ? M_or_0 : Mp;
-  constexpr size_t SZ = MaxLanes(FV<M_or_0>());
-  HWY_ALIGN float tmp[N * SZ];
-  for (size_t i = 0; i < M; i += Lanes(FV<M_or_0>())) {
+template <size_t N, size_t M, bool fit, typename FromBlock, typename ToBlock>
+void DCT1DWrapper(const FromBlock& from, const ToBlock& to, size_t Mp,
+                  float* JXL_RESTRICT tmp) {
+  JXL_DASSERT(fit ? Mp == M : Mp > M);
+  for (size_t i = 0; i < Mp; i += M) {
     // TODO(veluca): consider removing the temporary memory here (as is done in
     // IDCT), if it turns out that some compilers don't optimize away the loads
     // and this is performance-critical.
-    CoeffBundle<N, SZ>::LoadFromBlock(from, i, tmp);
-    DCT1DImpl<N, SZ>()(tmp);
-    CoeffBundle<N, SZ>::StoreToBlockAndScale(tmp, to, i);
+    CoeffBundle<N, M>::LoadFromBlock(from, i, tmp);
+    DCT1DImpl<N, M>()(tmp, tmp + N * M);
+    CoeffBundle<N, M>::StoreToBlockAndScale(tmp, to, i);
+    if (fit) return;
   }
 }
 
-template <size_t N, size_t M_or_0, typename FromBlock, typename ToBlock>
-void IDCT1DWrapper(const FromBlock& from, const ToBlock& to, size_t Mp) {
-  size_t M = M_or_0 != 0 ? M_or_0 : Mp;
-  constexpr size_t SZ = MaxLanes(FV<M_or_0>());
-  for (size_t i = 0; i < M; i += Lanes(FV<M_or_0>())) {
-    IDCT1DImpl<N, SZ>()(from.Address(0, i), from.Stride(), to.Address(0, i),
-                        to.Stride());
+template <size_t N, size_t M, bool fit, typename FromBlock, typename ToBlock>
+void IDCT1DWrapper(const FromBlock& from, const ToBlock& to, size_t Mp,
+                   float* JXL_RESTRICT tmp) {
+  JXL_DASSERT(fit ? Mp == M : Mp > M);
+  for (size_t i = 0; i < Mp; i += M) {
+    IDCT1DImpl<N, M>()(from.Address(0, i), from.Stride(), to.Address(0, i),
+                       to.Stride(), tmp);
+    if (fit) return;
   }
 }
 
-template <size_t N, size_t M, typename = void>
+/*    if (HWY_HAVE_SCALABLE) {
+      typedef void (*F)(const FromBlock&, const ToBlock&, size_t,
+                        float* JXL_RESTRICT);
+      static F f = []() -> F {
+        size_t L = Lanes(HWY_FULL(float)());
+        static_assert(M <= 256, "Unsupported DCT size");
+        return DCT1DWrapper<N, M,  false>;
+      }();
+      f(from, to, M, tmp);
+*/
+
+template <size_t N, size_t M, size_t L>
+struct DCT1DCapped {
+  template <typename FromBlock, typename ToBlock>
+  static void Process(const FromBlock& from, const ToBlock& to,
+                      float* JXL_RESTRICT tmp) {
+    if (M <= L) {
+      return DCT1DWrapper<N, M, /* fit */ true>(from, to, M, tmp);
+    } else {
+      return NoInlineWrapper(
+          DCT1DWrapper<N, L, /* fit */ false, FromBlock, ToBlock>, from, to, M,
+          tmp);
+    }
+  }
+};
+
+template <size_t N, size_t M>
 struct DCT1D {
   template <typename FromBlock, typename ToBlock>
-  void operator()(const FromBlock& from, const ToBlock& to) {
-    return DCT1DWrapper<N, M>(from, to, M);
+  void operator()(const FromBlock& from, const ToBlock& to,
+                  float* JXL_RESTRICT tmp) {
+#if HWY_HAVE_SCALABLE
+    typedef void (*F)(const FromBlock&, const ToBlock&, float* JXL_RESTRICT);
+    static F f = []() -> F {
+      size_t L = Lanes(HWY_FULL(float)());
+      if (L >= 128) return DCT1DCapped<N, M, 128>::Process;
+      if (L == 64) return DCT1DCapped<N, M, 64>::Process;
+      if (L == 32) return DCT1DCapped<N, M, 32>::Process;
+      if (L == 16) return DCT1DCapped<N, M, 16>::Process;
+      if (L == 8) return DCT1DCapped<N, M, 8>::Process;
+      if (L == 4) return DCT1DCapped<N, M, 4>::Process;
+      if (L == 2) return DCT1DCapped<N, M, 2>::Process;
+      return DCT1DCapped<N, M, 1>::Process;
+    }();
+    return f(from, to, tmp);
+#else
+    return DCT1DCapped<N, M, kMaxLanes>::Process(from, to, tmp);
+#endif
+  }
+};
+
+template <size_t N, size_t M, size_t L>
+struct IDCT1DCapped {
+  template <typename FromBlock, typename ToBlock>
+  static void Process(const FromBlock& from, const ToBlock& to,
+                      float* JXL_RESTRICT tmp) {
+    if (M <= L) {
+      return IDCT1DWrapper<N, M, /* fit */ true>(from, to, M, tmp);
+    } else {
+      return NoInlineWrapper(
+          IDCT1DWrapper<N, L, /* fit */ false, FromBlock, ToBlock>, from, to, M,
+          tmp);
+    }
   }
 };
 
 template <size_t N, size_t M>
-struct DCT1D<N, M, typename std::enable_if<(M > MaxLanes(FV<0>()))>::type> {
-  template <typename FromBlock, typename ToBlock>
-  void operator()(const FromBlock& from, const ToBlock& to) {
-    return NoInlineWrapper(DCT1DWrapper<N, 0, FromBlock, ToBlock>, from, to, M);
-  }
-};
-
-template <size_t N, size_t M, typename = void>
 struct IDCT1D {
   template <typename FromBlock, typename ToBlock>
-  void operator()(const FromBlock& from, const ToBlock& to) {
-    return IDCT1DWrapper<N, M>(from, to, M);
-  }
-};
-
-template <size_t N, size_t M>
-struct IDCT1D<N, M, typename std::enable_if<(M > MaxLanes(FV<0>()))>::type> {
-  template <typename FromBlock, typename ToBlock>
-  void operator()(const FromBlock& from, const ToBlock& to) {
-    return NoInlineWrapper(IDCT1DWrapper<N, 0, FromBlock, ToBlock>, from, to,
-                           M);
+  void operator()(const FromBlock& from, const ToBlock& to,
+                  float* JXL_RESTRICT tmp) {
+#if HWY_HAVE_SCALABLE
+    typedef void (*F)(const FromBlock&, const ToBlock&, float* JXL_RESTRICT);
+    static F f = []() -> F {
+      size_t L = Lanes(HWY_FULL(float)());
+      if (L >= 128) return IDCT1DCapped<N, M, 128>::Process;
+      if (L == 64) return IDCT1DCapped<N, M, 64>::Process;
+      if (L == 32) return IDCT1DCapped<N, M, 32>::Process;
+      if (L == 16) return IDCT1DCapped<N, M, 16>::Process;
+      if (L == 8) return IDCT1DCapped<N, M, 8>::Process;
+      if (L == 4) return IDCT1DCapped<N, M, 4>::Process;
+      if (L == 2) return IDCT1DCapped<N, M, 2>::Process;
+      return IDCT1DCapped<N, M, 1>::Process;
+    }();
+    return f(from, to, tmp);
+#else
+    return IDCT1DCapped<N, M, kMaxLanes>::Process(from, to, tmp);
+#endif
   }
 };
 
@@ -290,15 +360,16 @@ struct ComputeScaledDCT {
   HWY_MAYBE_UNUSED void operator()(const From& from, float* to,
                                    float* JXL_RESTRICT scratch_space) {
     float* JXL_RESTRICT block = scratch_space;
+    float* JXL_RESTRICT tmp = scratch_space + ROWS * COLS;
     if (ROWS < COLS) {
-      DCT1D<ROWS, COLS>()(from, DCTTo(block, COLS));
+      DCT1D<ROWS, COLS>()(from, DCTTo(block, COLS), tmp);
       Transpose<ROWS, COLS>::Run(DCTFrom(block, COLS), DCTTo(to, ROWS));
-      DCT1D<COLS, ROWS>()(DCTFrom(to, ROWS), DCTTo(block, ROWS));
+      DCT1D<COLS, ROWS>()(DCTFrom(to, ROWS), DCTTo(block, ROWS), tmp);
       Transpose<COLS, ROWS>::Run(DCTFrom(block, ROWS), DCTTo(to, COLS));
     } else {
-      DCT1D<ROWS, COLS>()(from, DCTTo(to, COLS));
+      DCT1D<ROWS, COLS>()(from, DCTTo(to, COLS), tmp);
       Transpose<ROWS, COLS>::Run(DCTFrom(to, COLS), DCTTo(block, ROWS));
-      DCT1D<COLS, ROWS>()(DCTFrom(block, ROWS), DCTTo(to, ROWS));
+      DCT1D<COLS, ROWS>()(DCTFrom(block, ROWS), DCTTo(to, ROWS), tmp);
     }
   }
 };
@@ -312,16 +383,17 @@ struct ComputeScaledIDCT {
   HWY_MAYBE_UNUSED void operator()(float* JXL_RESTRICT from, const To& to,
                                    float* JXL_RESTRICT scratch_space) {
     float* JXL_RESTRICT block = scratch_space;
+    float* JXL_RESTRICT tmp = scratch_space + ROWS * COLS;
     // Reverse the steps done in ComputeScaledDCT.
     if (ROWS < COLS) {
       Transpose<ROWS, COLS>::Run(DCTFrom(from, COLS), DCTTo(block, ROWS));
-      IDCT1D<COLS, ROWS>()(DCTFrom(block, ROWS), DCTTo(from, ROWS));
+      IDCT1D<COLS, ROWS>()(DCTFrom(block, ROWS), DCTTo(from, ROWS), tmp);
       Transpose<COLS, ROWS>::Run(DCTFrom(from, ROWS), DCTTo(block, COLS));
-      IDCT1D<ROWS, COLS>()(DCTFrom(block, COLS), to);
+      IDCT1D<ROWS, COLS>()(DCTFrom(block, COLS), to, tmp);
     } else {
-      IDCT1D<COLS, ROWS>()(DCTFrom(from, ROWS), DCTTo(block, ROWS));
+      IDCT1D<COLS, ROWS>()(DCTFrom(from, ROWS), DCTTo(block, ROWS), tmp);
       Transpose<COLS, ROWS>::Run(DCTFrom(block, ROWS), DCTTo(from, COLS));
-      IDCT1D<ROWS, COLS>()(DCTFrom(from, COLS), to);
+      IDCT1D<ROWS, COLS>()(DCTFrom(from, COLS), to, tmp);
     }
   }
 };

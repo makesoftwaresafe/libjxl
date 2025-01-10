@@ -12,40 +12,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(skcms-obj OBJECT EXCLUDE_FROM_ALL skcms/skcms.cc)
-target_include_directories(skcms-obj PUBLIC "${CMAKE_CURRENT_LIST_DIR}/skcms/")
+function(target_link_skcms TARGET_NAME)
+  set(_sources_dir "${PROJECT_SOURCE_DIR}/third_party/skcms")
+  set(_sources
+    "${_sources_dir}/skcms.cc"
+    "${_sources_dir}/src/skcms_TransformBaseline.cc"
+  )
 
-# This library is meant to be compiled/used by external libs (such as plugins)
-# that need to use skcms. We use a wrapper for libjxl.
-add_library(skcms-interface INTERFACE)
-target_sources(skcms-interface INTERFACE ${CMAKE_CURRENT_LIST_DIR}/skcms/skcms.cc)
-target_include_directories(skcms-interface INTERFACE ${CMAKE_CURRENT_LIST_DIR}/skcms)
-
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-Wno-psabi" CXX_WPSABI_SUPPORTED)
-if(CXX_WPSABI_SUPPORTED)
-  target_compile_options(skcms-obj PRIVATE -Wno-psabi)
-  target_compile_options(skcms-interface INTERFACE -Wno-psabi)
-endif()
-
-if(JPEGXL_BUNDLE_SKCMS)
-  target_compile_options(skcms-obj PRIVATE -DJPEGXL_BUNDLE_SKCMS=1)
-  if(MSVC)
-    target_compile_options(skcms-obj
-      PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/../lib/jxl/enc_jxl_skcms.h)
-  else()
-    target_compile_options(skcms-obj
-      PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/../lib/jxl/enc_jxl_skcms.h)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    set_source_files_properties("${_sources_dir}/src/skcms_TransformBaseline.cc"
+      PROPERTIES COMPILE_OPTIONS "-Wno-maybe-uninitialized"
+      TARGET_DIRECTORY ${TARGET_NAME}
+    )
   endif()
-endif()
 
-set_target_properties(skcms-obj PROPERTIES
-  POSITION_INDEPENDENT_CODE ON
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN 1
-)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(_use_avx2 ${CXX_MAVX2_SUPPORTED} AND ${CXX_MF16C_SUPPORTED})
+    set(_use_avx512 ${CXX_MAVX512F_SUPPORTED} AND ${CXX_MAVX512DQ_SUPPORTED} AND ${CXX_MAVX512CD_SUPPORTED} AND ${CXX_MAVX512BW_SUPPORTED} AND ${CXX_MAVX512VL_SUPPORTED})
+  else()
+    set(_use_avx2 0)
+    set(_use_avx512 0)
+  endif()
 
-add_library(skcms STATIC EXCLUDE_FROM_ALL $<TARGET_OBJECTS:skcms-obj>)
-target_include_directories(skcms
-  PUBLIC $<TARGET_PROPERTY:skcms-obj,INCLUDE_DIRECTORIES>)
+  if(${_use_avx2})
+    list(APPEND _sources "${_sources_dir}/src/skcms_TransformHsw.cc")
+    set_source_files_properties("${_sources_dir}/src/skcms_TransformHsw.cc"
+      PROPERTIES COMPILE_OPTIONS "-march=x86-64;-mavx2;-mf16c"
+      TARGET_DIRECTORY ${TARGET_NAME}
+    )
+  else()
+    target_compile_definitions(${TARGET_NAME} PRIVATE -DSKCMS_DISABLE_HSW)
+  endif()
+  if(${_use_avx512})
+    list(APPEND _sources "${_sources_dir}/src/skcms_TransformSkx.cc")
+    set_source_files_properties("${_sources_dir}/src/skcms_TransformSkx.cc"
+      PROPERTIES COMPILE_OPTIONS "-march=x86-64;-mavx512f;-mavx512dq;-mavx512cd;-mavx512bw;-mavx512vl"
+      TARGET_DIRECTORY ${TARGET_NAME}
+    )
+  else()
+    target_compile_definitions(${TARGET_NAME} PRIVATE -DSKCMS_DISABLE_SKX)
+  endif()
 
+  target_sources(${TARGET_NAME} PRIVATE "${_sources}")
+  target_include_directories(${TARGET_NAME} PRIVATE "${PROJECT_SOURCE_DIR}/third_party/skcms/")
+
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-Wno-psabi" CXX_WPSABI_SUPPORTED)
+  if(CXX_WPSABI_SUPPORTED)
+    set_source_files_properties("${_sources}"
+      PROPERTIES COMPILE_OPTIONS "-Wno-psabi"
+      TARGET_DIRECTORY ${TARGET_NAME})
+  endif()
+endfunction()

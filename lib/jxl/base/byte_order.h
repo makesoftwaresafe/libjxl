@@ -6,10 +6,10 @@
 #ifndef LIB_JXL_BASE_BYTE_ORDER_H_
 #define LIB_JXL_BASE_BYTE_ORDER_H_
 
+#include <jxl/types.h>
 #include <stdint.h>
 #include <string.h>  // memcpy
 
-#include "jxl/types.h"
 #include "lib/jxl/base/compiler_specific.h"
 
 #if JXL_COMPILER_MSVC
@@ -135,6 +135,22 @@ static JXL_INLINE uint64_t LoadLE64(const uint8_t* p) {
 #endif
 }
 
+// Loads a Big-Endian float
+static JXL_INLINE float LoadBEFloat(const uint8_t* p) {
+  uint32_t u = LoadBE32(p);
+  float result;
+  memcpy(&result, &u, 4);
+  return result;
+}
+
+// Loads a Little-Endian float
+static JXL_INLINE float LoadLEFloat(const uint8_t* p) {
+  uint32_t u = LoadLE32(p);
+  float result;
+  memcpy(&result, &u, 4);
+  return result;
+}
+
 static JXL_INLINE void StoreBE16(const uint32_t native, uint8_t* p) {
   p[0] = (native >> 8) & 0xFF;
   p[1] = native & 0xFF;
@@ -221,22 +237,22 @@ struct OrderLE {};
 // Wrappers for calling from generic code.
 static JXL_INLINE void Store16(OrderBE /*tag*/, const uint32_t native,
                                uint8_t* p) {
-  return StoreBE16(native, p);
+  StoreBE16(native, p);
 }
 
 static JXL_INLINE void Store16(OrderLE /*tag*/, const uint32_t native,
                                uint8_t* p) {
-  return StoreLE16(native, p);
+  StoreLE16(native, p);
 }
 
 static JXL_INLINE void Store32(OrderBE /*tag*/, const uint32_t native,
                                uint8_t* p) {
-  return StoreBE32(native, p);
+  StoreBE32(native, p);
 }
 
 static JXL_INLINE void Store32(OrderLE /*tag*/, const uint32_t native,
                                uint8_t* p) {
-  return StoreLE32(native, p);
+  StoreLE32(native, p);
 }
 
 static JXL_INLINE uint32_t Load16(OrderBE /*tag*/, const uint8_t* p) {

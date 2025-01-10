@@ -27,6 +27,12 @@
  */
 
 (() => {
+  // Set COOP/COEP headers for document/script responses; use when this can not
+  // be done on server side (e.g. GitHub Pages).
+  const FORCE_COP = true;
+  // Interpret 'content-type: application/octet-stream' as JXL; use when server
+  // does not set appropriate content type (e.g. GitHub Pages).
+  const FORCE_DECODING = true;
   // Embedded (baked-in) responses for faster turn-around.
   const EMBEDDED = {
     'client_worker.js': '$client_worker.js$',
@@ -34,6 +40,7 @@
     'jxl_decoder.worker.js': '$jxl_decoder.worker.js$',
   };
 
+  // Enable SharedArrayBuffer.
   const setCopHeaders = (headers) => {
     headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
     headers.set('Cross-Origin-Opener-Policy', 'same-origin');
@@ -42,21 +49,24 @@
   // Inflight object: {clientId, uid, timestamp, controller}
   const inflight = [];
 
+  // Generate (very likely) unique string.
   const makeUid = () => {
     return Math.random().toString(36).substring(2) +
         Math.random().toString(36).substring(2);
   };
 
+  // Make list (non-recursively) of transferable entities.
   const gatherTransferrables = (...args) => {
     const result = [];
     for (let i = 0; i < args.length; ++i) {
-      if (args[i]) {
+      if (args[i] && args[i].buffer) {
         result.push(args[i].buffer);
       }
     }
     return result;
   };
 
+  // Serve items that are embedded in this service worker.
   const maybeProcessEmbeddedResources = (event) => {
     const url = event.request.url;
     // Shortcut for baked-in scripts.
@@ -77,8 +87,9 @@
     return false;
   };
 
+  // Decode JXL image response and serve it as a PNG image.
   const wrapImageResponse = async (clientId, originalResponse) => {
-    // TODO: cache?
+    // TODO(eustas): cache?
     const client = await clients.get(clientId);
     // Client is gone? Not our problem then.
     if (!client) {
@@ -116,13 +127,18 @@
         reader.read().then(onRead);
       }
     };
-    reader.read(new SharedArrayBuffer(65536)).then(onRead);
+    // const view = new SharedArrayBuffer(65536);
+    const view = new Uint8Array(65536);
+    reader.read(view).then(onRead);
 
     let modifiedResponseHeaders = new Headers(originalResponse.headers);
+    modifiedResponseHeaders.delete('Content-Length');
     modifiedResponseHeaders.set('Content-Type', 'image/png');
+    modifiedResponseHeaders.set('Server', 'ServiceWorker');
     return new Response(outputStream, {headers: modifiedResponseHeaders});
   };
 
+  // Check if response needs decoding; if so - do it.
   const wrapImageRequest = async (clientId, request) => {
     let modifiedRequestHeaders = new Headers(request.headers);
     modifiedRequestHeaders.append('Accept', 'image/jxl');
@@ -131,13 +147,38 @@
     let originalResponse = await fetch(modifiedRequest);
     let contentType = originalResponse.headers.get('Content-Type');
 
-    if (contentType === 'image/jxl') {
+    let isJxlResponse = (contentType === 'image/jxl');
+    if (FORCE_DECODING && contentType === 'application/octet-stream') {
+      isJxlResponse = true;
+    }
+    if (isJxlResponse) {
       return wrapImageResponse(clientId, originalResponse);
     }
 
     return originalResponse;
   };
 
+  const reportError = (err) => {
+    // console.error(err);
+  };
+
+  const upgradeResponse = (response) => {
+    if (response.status === 0) {
+      return response;
+    }
+
+    const newHeaders = new Headers(response.headers);
+    setCopHeaders(newHeaders);
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: newHeaders,
+    });
+  };
+
+  // Process fetch request; either bypass, or serve embedded resource,
+  // or upgrade.
   const onFetch = async (event) => {
     const clientId = event.clientId;
     const request = event.request;
@@ -161,8 +202,14 @@
       }
       return;
     }
+
+    if (FORCE_COP) {
+      event.respondWith(
+          fetch(event.request).then(upgradeResponse).catch(reportError));
+    }
   };
 
+  // Serve decoded bytes.
   const onMessage = (event) => {
     const data = event.data;
     const uid = data.uid;
@@ -181,7 +228,15 @@
     inflightEntry.outputStreamController.close();
   };
 
+  // This method is "main" for service worker.
   const serviceWorkerMain = () => {
+    // https://v8.dev/blog/wasm-code-caching
+    // > Every web site must perform at least one full compilation of a
+    // > WebAssembly module — use workers to hide that from your users.
+    // TODO(eustas): not 100% reliable, investigate why
+    self['JxlDecoderLeak'] =
+        WebAssembly.compileStreaming(fetch('jxl_decoder.wasm'));
+
     // ServiceWorker lifecycle.
     self.addEventListener('install', () => {
       return self.skipWaiting();
@@ -217,19 +272,25 @@
 
   // Executed in HTML page environment.
   const maybeRegisterServiceWorker = () => {
+    const config = {
+      log: console.log,
+      error: console.error,
+      requestReload: (msg) => window.location.reload(),
+      ...window.serviceWorkerConfig  // add overrides
+    }
+
     if (!window.isSecureContext) {
       config.log('Secure context is required for this ServiceWorker.');
       return;
     }
 
-    const config = {
-      log: console.log,
-      error: console.error,
-      ...window.serviceWorkerConfig  // add overrides
-    }
-
+    const nav = navigator;  // Explicitly capture navigator object.
     const onServiceWorkerRegistrationSuccess = (registration) => {
       config.log('Service Worker registered', registration.scope);
+      if (!registration.active || !nav.serviceWorker.controller) {
+        config.requestReload(
+            'Reload to allow Service Worker process all requests');
+      }
     };
 
     const onServiceWorkerRegistrationFailure = (err) => {
@@ -242,10 +303,15 @@
             onServiceWorkerRegistrationFailure);
   };
 
+  const pageMain = () => {
+    maybeRegisterServiceWorker();
+    prepareClient();
+  };
+
+  // Detect environment and run corresponding "main" method.
   if (typeof window === 'undefined') {
     serviceWorkerMain();
   } else {
-    maybeRegisterServiceWorker();
-    prepareClient();
+    pageMain();
   }
 })();
