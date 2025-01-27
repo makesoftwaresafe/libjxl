@@ -5,20 +5,51 @@
 
 #include "lib/extras/enc/exr.h"
 
-#include <ImfChromaticitiesAttribute.h>
-#include <ImfIO.h>
-#include <ImfRgbaFile.h>
-#include <ImfStandardAttributes.h>
+#include <memory>
 
-#include <vector>
+// IWYU pragma: no_include "ImathConfig.h"
+// IWYU pragma: no_include "ImfChromaticities.h"
+// IWYU pragma: no_include "ImfHeader.h"
+// IWYU pragma: no_include "OpenEXRConfig.h"
+#include "lib/extras/enc/encode.h"
 
-#include "jxl/codestream_header.h"
-#include "lib/extras/packed_image.h"
-#include "lib/jxl/base/byte_order.h"
+#if !JPEGXL_ENABLE_EXR
 
 namespace jxl {
 namespace extras {
+std::unique_ptr<Encoder> GetEXREncoder() { return nullptr; }
+}  // namespace extras
+}  // namespace jxl
 
+#else  // JPEGXL_ENABLE_EXR
+
+#include <ImathVec.h>
+#include <ImfIO.h>
+#include <ImfNamespace.h>  // IWYU pragma: keep
+#include <ImfRgba.h>
+#include <ImfRgbaFile.h>
+#include <ImfStandardAttributes.h>
+#include <ImfThreading.h>
+#include <jxl/codestream_header.h>
+#include <jxl/color_encoding.h>
+#include <jxl/types.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <utility>
+#include <vector>
+
+#include "lib/extras/packed_image.h"
+#include "lib/jxl/base/byte_order.h"
+#include "lib/jxl/base/common.h"
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/data_parallel.h"
+#include "lib/jxl/base/status.h"
+
+namespace jxl {
+namespace extras {
 namespace {
 
 namespace OpenEXR = OPENEXR_IMF_NAMESPACE;
@@ -81,7 +112,7 @@ Status EncodeImageEXR(const PackedImage& image, const JxlBasicInfo& info,
   const size_t xsize = info.xsize;
   const size_t ysize = info.ysize;
   const bool has_alpha = info.alpha_bits > 0;
-  const bool alpha_is_premultiplied = info.alpha_premultiplied;
+  const bool alpha_is_premultiplied = FROM_JXL_BOOL(info.alpha_premultiplied);
 
   if (info.num_color_channels != 3 ||
       c_enc.color_space != JXL_COLOR_SPACE_RGB ||
@@ -110,7 +141,7 @@ Status EncodeImageEXR(const PackedImage& image, const JxlBasicInfo& info,
   chromaticities.white =
       Imath::V2f(c_enc.white_point_xy[0], c_enc.white_point_xy[1]);
   OpenEXR::addChromaticities(header, chromaticities);
-  OpenEXR::addWhiteLuminance(header, 255.0f);
+  OpenEXR::addWhiteLuminance(header, info.intensity_target);
 
   auto loadFloat =
       format.endianness == JXL_BIG_ENDIAN ? LoadBEFloat : LoadLEFloat;
@@ -162,7 +193,7 @@ class EXREncoder : public Encoder {
   std::vector<JxlPixelFormat> AcceptedFormats() const override {
     std::vector<JxlPixelFormat> formats;
     for (const uint32_t num_channels : {1, 2, 3, 4}) {
-      for (const JxlDataType data_type : {JXL_TYPE_FLOAT, JXL_TYPE_FLOAT16}) {
+      for (const JxlDataType data_type : {JXL_TYPE_FLOAT}) {
         for (JxlEndianness endianness : {JXL_BIG_ENDIAN, JXL_LITTLE_ENDIAN}) {
           formats.push_back(JxlPixelFormat{/*num_channels=*/num_channels,
                                            /*data_type=*/data_type,
@@ -174,7 +205,7 @@ class EXREncoder : public Encoder {
     return formats;
   }
   Status Encode(const PackedPixelFile& ppf, EncodedImage* encoded_image,
-                ThreadPool* pool = nullptr) const override {
+                ThreadPool* pool) const override {
     JXL_RETURN_IF_ERROR(VerifyBasicInfo(ppf.info));
     encoded_image->icc.clear();
     encoded_image->bitstreams.clear();
@@ -198,3 +229,5 @@ std::unique_ptr<Encoder> GetEXREncoder() {
 
 }  // namespace extras
 }  // namespace jxl
+
+#endif  // JPEGXL_ENABLE_EXR

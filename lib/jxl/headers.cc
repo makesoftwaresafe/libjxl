@@ -5,9 +5,16 @@
 
 #include "lib/jxl/headers.h"
 
-#include "lib/jxl/base/printf_macros.h"
-#include "lib/jxl/common.h"
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/dec_bit_reader.h"
+#include "lib/jxl/field_encodings.h"
 #include "lib/jxl/fields.h"
+#include "lib/jxl/frame_dimensions.h"
 
 namespace jxl {
 namespace {
@@ -18,7 +25,7 @@ struct Rational {
 
   // Returns floor(multiplicand * rational).
   constexpr uint32_t MulTruncate(uint32_t multiplicand) const {
-    return uint64_t(multiplicand) * num / den;
+    return static_cast<uint64_t>(multiplicand) * num / den;
   }
 
   uint32_t num;
@@ -26,7 +33,7 @@ struct Rational {
 };
 
 Rational FixedAspectRatios(uint32_t ratio) {
-  JXL_ASSERT(0 != ratio && ratio < 8);
+  JXL_DASSERT(0 != ratio && ratio < 8);
   // Other candidates: 5/4, 7/5, 14/9, 16/10, 5/3, 21/9, 12/5
   constexpr Rational kRatios[7] = {Rational(1, 1),    // square
                                    Rational(12, 10),  //
@@ -58,7 +65,8 @@ size_t SizeHeader::xsize() const {
 }
 
 Status SizeHeader::Set(size_t xsize64, size_t ysize64) {
-  if (xsize64 > 0xFFFFFFFFull || ysize64 > 0xFFFFFFFFull) {
+  constexpr size_t kDimensionCap = std::numeric_limits<uint32_t>::max();
+  if (xsize64 > kDimensionCap || ysize64 > kDimensionCap) {
     return JXL_FAILURE("Image too large");
   }
   const uint32_t xsize32 = static_cast<uint32_t>(xsize64);
@@ -80,8 +88,8 @@ Status SizeHeader::Set(size_t xsize64, size_t ysize64) {
       xsize_ = xsize32;
     }
   }
-  JXL_ASSERT(xsize() == xsize64);
-  JXL_ASSERT(ysize() == ysize64);
+  JXL_ENSURE(xsize() == xsize64);
+  JXL_ENSURE(ysize() == ysize64);
   return true;
 }
 
@@ -104,8 +112,8 @@ Status PreviewHeader::Set(size_t xsize64, size_t ysize64) {
       xsize_ = xsize32;
     }
   }
-  JXL_ASSERT(xsize() == xsize64);
-  JXL_ASSERT(ysize() == ysize64);
+  JXL_ENSURE(xsize() == xsize64);
+  JXL_ENSURE(ysize() == ysize64);
   return true;
 }
 
@@ -190,11 +198,6 @@ Status AnimationHeader::VisitFields(Visitor* JXL_RESTRICT visitor) {
 Status ReadSizeHeader(BitReader* JXL_RESTRICT reader,
                       SizeHeader* JXL_RESTRICT size) {
   return Bundle::Read(reader, size);
-}
-
-Status WriteSizeHeader(const SizeHeader& size, BitWriter* JXL_RESTRICT writer,
-                       size_t layer, AuxOut* aux_out) {
-  return Bundle::Write(size, writer, layer, aux_out);
 }
 
 }  // namespace jxl

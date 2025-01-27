@@ -3,6 +3,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/frame_dimensions.h"
+
 #if defined(LIB_JXL_ENC_TRANSFORMS_INL_H_) == defined(HWY_TARGET_TOGGLE)
 #ifdef LIB_JXL_ENC_TRANSFORMS_INL_H_
 #undef LIB_JXL_ENC_TRANSFORMS_INL_H_
@@ -10,26 +13,33 @@
 #define LIB_JXL_ENC_TRANSFORMS_INL_H_
 #endif
 
-#include <stddef.h>
-
+#include <cstddef>
+#include <cstdint>
 #include <hwy/highway.h>
 
 #include "lib/jxl/ac_strategy.h"
-#include "lib/jxl/coeff_order_fwd.h"
 #include "lib/jxl/dct-inl.h"
 #include "lib/jxl/dct_scales.h"
+
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
+
+enum class AcStrategyType : uint32_t;
+
 namespace HWY_NAMESPACE {
 namespace {
+
+constexpr size_t kMaxBlocks = 32;
 
 // Inverse of ReinterpretingDCT.
 template <size_t DCT_ROWS, size_t DCT_COLS, size_t LF_ROWS, size_t LF_COLS,
           size_t ROWS, size_t COLS>
 HWY_INLINE void ReinterpretingIDCT(const float* input,
                                    const size_t input_stride, float* output,
-                                   const size_t output_stride) {
-  HWY_ALIGN float block[ROWS * COLS] = {};
+                                   const size_t output_stride, float* scratch) {
+  static_assert(ROWS <= kMaxBlocks, "Unsupported block size");
+  static_assert(COLS <= kMaxBlocks, "Unsupported block size");
+  float* block = scratch;
   if (ROWS < COLS) {
     for (size_t y = 0; y < LF_ROWS; y++) {
       for (size_t x = 0; x < LF_COLS; x++) {
@@ -48,8 +58,7 @@ HWY_INLINE void ReinterpretingIDCT(const float* input,
     }
   }
 
-  // ROWS, COLS <= 8, so we can put scratch space on the stack.
-  HWY_ALIGN float scratch_space[ROWS * COLS];
+  float* scratch_space = scratch + kMaxBlocks * kMaxBlocks;
   ComputeScaledIDCT<ROWS, COLS>()(block, DCTTo(output, output_stride),
                                   scratch_space);
 }
@@ -399,10 +408,10 @@ template <size_t afv_kind>
 void AFVTransformFromPixels(const float* JXL_RESTRICT pixels,
                             size_t pixels_stride,
                             float* JXL_RESTRICT coefficients) {
-  HWY_ALIGN float scratch_space[4 * 8 * 2];
+  HWY_ALIGN float scratch_space[4 * 8 * 5];
   size_t afv_x = afv_kind & 1;
   size_t afv_y = afv_kind / 2;
-  HWY_ALIGN float block[4 * 8];
+  HWY_ALIGN float block[4 * 8] = {};
   for (size_t iy = 0; iy < 4; iy++) {
     for (size_t ix = 0; ix < 4; ix++) {
       block[(afv_y == 1 ? 3 - iy : iy) * 4 + (afv_x == 1 ? 3 - ix : ix)] =
@@ -445,15 +454,14 @@ void AFVTransformFromPixels(const float* JXL_RESTRICT pixels,
   coefficients[8] = (block00 + block01 - 2 * block10) * 0.25f;
 }
 
-HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategy::Type strategy,
+HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategyType strategy,
                                           const float* JXL_RESTRICT pixels,
                                           size_t pixels_stride,
                                           float* JXL_RESTRICT coefficients,
                                           float* JXL_RESTRICT scratch_space) {
-  using Type = AcStrategy::Type;
+  using Type = AcStrategyType;
   switch (strategy) {
     case Type::IDENTITY: {
-      PROFILER_ZONE("DCT Identity");
       for (size_t y = 0; y < 2; y++) {
         for (size_t x = 0; x < 2; x++) {
           float block_dc = 0;
@@ -486,7 +494,6 @@ HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategy::Type strategy,
       break;
     }
     case Type::DCT8X4: {
-      PROFILER_ZONE("DCT 8x4");
       for (size_t x = 0; x < 2; x++) {
         HWY_ALIGN float block[4 * 8];
         ComputeScaledDCT<8, 4>()(DCTFrom(pixels + x * 4, pixels_stride), block,
@@ -505,7 +512,6 @@ HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategy::Type strategy,
       break;
     }
     case Type::DCT4X8: {
-      PROFILER_ZONE("DCT 4x8");
       for (size_t y = 0; y < 2; y++) {
         HWY_ALIGN float block[4 * 8];
         ComputeScaledDCT<4, 8>()(
@@ -524,7 +530,6 @@ HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategy::Type strategy,
       break;
     }
     case Type::DCT4X4: {
-      PROFILER_ZONE("DCT 4");
       for (size_t y = 0; y < 2; y++) {
         for (size_t x = 0; x < 2; x++) {
           HWY_ALIGN float block[4 * 4];
@@ -549,256 +554,233 @@ HWY_MAYBE_UNUSED void TransformFromPixels(const AcStrategy::Type strategy,
       break;
     }
     case Type::DCT2X2: {
-      PROFILER_ZONE("DCT 2");
       DCT2TopBlock<8>(pixels, pixels_stride, coefficients);
       DCT2TopBlock<4>(coefficients, kBlockDim, coefficients);
       DCT2TopBlock<2>(coefficients, kBlockDim, coefficients);
       break;
     }
     case Type::DCT16X16: {
-      PROFILER_ZONE("DCT 16");
       ComputeScaledDCT<16, 16>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT16X8: {
-      PROFILER_ZONE("DCT 16x8");
       ComputeScaledDCT<16, 8>()(DCTFrom(pixels, pixels_stride), coefficients,
                                 scratch_space);
       break;
     }
     case Type::DCT8X16: {
-      PROFILER_ZONE("DCT 8x16");
       ComputeScaledDCT<8, 16>()(DCTFrom(pixels, pixels_stride), coefficients,
                                 scratch_space);
       break;
     }
     case Type::DCT32X8: {
-      PROFILER_ZONE("DCT 32x8");
       ComputeScaledDCT<32, 8>()(DCTFrom(pixels, pixels_stride), coefficients,
                                 scratch_space);
       break;
     }
     case Type::DCT8X32: {
-      PROFILER_ZONE("DCT 8x32");
       ComputeScaledDCT<8, 32>()(DCTFrom(pixels, pixels_stride), coefficients,
                                 scratch_space);
       break;
     }
     case Type::DCT32X16: {
-      PROFILER_ZONE("DCT 32x16");
       ComputeScaledDCT<32, 16>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT16X32: {
-      PROFILER_ZONE("DCT 16x32");
       ComputeScaledDCT<16, 32>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT32X32: {
-      PROFILER_ZONE("DCT 32");
       ComputeScaledDCT<32, 32>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT: {
-      PROFILER_ZONE("DCT 8");
       ComputeScaledDCT<8, 8>()(DCTFrom(pixels, pixels_stride), coefficients,
                                scratch_space);
       break;
     }
     case Type::AFV0: {
-      PROFILER_ZONE("AFV0");
       AFVTransformFromPixels<0>(pixels, pixels_stride, coefficients);
       break;
     }
     case Type::AFV1: {
-      PROFILER_ZONE("AFV1");
       AFVTransformFromPixels<1>(pixels, pixels_stride, coefficients);
       break;
     }
     case Type::AFV2: {
-      PROFILER_ZONE("AFV2");
       AFVTransformFromPixels<2>(pixels, pixels_stride, coefficients);
       break;
     }
     case Type::AFV3: {
-      PROFILER_ZONE("AFV3");
       AFVTransformFromPixels<3>(pixels, pixels_stride, coefficients);
       break;
     }
     case Type::DCT64X64: {
-      PROFILER_ZONE("DCT 64x64");
       ComputeScaledDCT<64, 64>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT64X32: {
-      PROFILER_ZONE("DCT 64x32");
       ComputeScaledDCT<64, 32>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT32X64: {
-      PROFILER_ZONE("DCT 32x64");
       ComputeScaledDCT<32, 64>()(DCTFrom(pixels, pixels_stride), coefficients,
                                  scratch_space);
       break;
     }
     case Type::DCT128X128: {
-      PROFILER_ZONE("DCT 128x128");
       ComputeScaledDCT<128, 128>()(DCTFrom(pixels, pixels_stride), coefficients,
                                    scratch_space);
       break;
     }
     case Type::DCT128X64: {
-      PROFILER_ZONE("DCT 128x64");
       ComputeScaledDCT<128, 64>()(DCTFrom(pixels, pixels_stride), coefficients,
                                   scratch_space);
       break;
     }
     case Type::DCT64X128: {
-      PROFILER_ZONE("DCT 64x128");
       ComputeScaledDCT<64, 128>()(DCTFrom(pixels, pixels_stride), coefficients,
                                   scratch_space);
       break;
     }
     case Type::DCT256X256: {
-      PROFILER_ZONE("DCT 256x256");
       ComputeScaledDCT<256, 256>()(DCTFrom(pixels, pixels_stride), coefficients,
                                    scratch_space);
       break;
     }
     case Type::DCT256X128: {
-      PROFILER_ZONE("DCT 256x128");
       ComputeScaledDCT<256, 128>()(DCTFrom(pixels, pixels_stride), coefficients,
                                    scratch_space);
       break;
     }
     case Type::DCT128X256: {
-      PROFILER_ZONE("DCT 128x256");
       ComputeScaledDCT<128, 256>()(DCTFrom(pixels, pixels_stride), coefficients,
                                    scratch_space);
       break;
     }
-    case Type::kNumValidStrategies:
-      JXL_ABORT("Invalid strategy");
   }
 }
 
-HWY_MAYBE_UNUSED void DCFromLowestFrequencies(const AcStrategy::Type strategy,
+// `scratch_space` should be at least 4 * kMaxBlocks * kMaxBlocks elements.
+HWY_MAYBE_UNUSED void DCFromLowestFrequencies(const AcStrategyType strategy,
                                               const float* block, float* dc,
-                                              size_t dc_stride) {
-  using Type = AcStrategy::Type;
+                                              size_t dc_stride,
+                                              float* scratch_space) {
+  using Type = AcStrategyType;
   switch (strategy) {
     case Type::DCT16X8: {
       ReinterpretingIDCT</*DCT_ROWS=*/2 * kBlockDim, /*DCT_COLS=*/kBlockDim,
                          /*LF_ROWS=*/2, /*LF_COLS=*/1, /*ROWS=*/2, /*COLS=*/1>(
-          block, 2 * kBlockDim, dc, dc_stride);
+          block, 2 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT8X16: {
       ReinterpretingIDCT</*DCT_ROWS=*/kBlockDim, /*DCT_COLS=*/2 * kBlockDim,
                          /*LF_ROWS=*/1, /*LF_COLS=*/2, /*ROWS=*/1, /*COLS=*/2>(
-          block, 2 * kBlockDim, dc, dc_stride);
+          block, 2 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT16X16: {
       ReinterpretingIDCT</*DCT_ROWS=*/2 * kBlockDim, /*DCT_COLS=*/2 * kBlockDim,
                          /*LF_ROWS=*/2, /*LF_COLS=*/2, /*ROWS=*/2, /*COLS=*/2>(
-          block, 2 * kBlockDim, dc, dc_stride);
+          block, 2 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT32X8: {
       ReinterpretingIDCT</*DCT_ROWS=*/4 * kBlockDim, /*DCT_COLS=*/kBlockDim,
                          /*LF_ROWS=*/4, /*LF_COLS=*/1, /*ROWS=*/4, /*COLS=*/1>(
-          block, 4 * kBlockDim, dc, dc_stride);
+          block, 4 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT8X32: {
       ReinterpretingIDCT</*DCT_ROWS=*/kBlockDim, /*DCT_COLS=*/4 * kBlockDim,
                          /*LF_ROWS=*/1, /*LF_COLS=*/4, /*ROWS=*/1, /*COLS=*/4>(
-          block, 4 * kBlockDim, dc, dc_stride);
+          block, 4 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT32X16: {
       ReinterpretingIDCT</*DCT_ROWS=*/4 * kBlockDim, /*DCT_COLS=*/2 * kBlockDim,
                          /*LF_ROWS=*/4, /*LF_COLS=*/2, /*ROWS=*/4, /*COLS=*/2>(
-          block, 4 * kBlockDim, dc, dc_stride);
+          block, 4 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT16X32: {
       ReinterpretingIDCT</*DCT_ROWS=*/2 * kBlockDim, /*DCT_COLS=*/4 * kBlockDim,
                          /*LF_ROWS=*/2, /*LF_COLS=*/4, /*ROWS=*/2, /*COLS=*/4>(
-          block, 4 * kBlockDim, dc, dc_stride);
+          block, 4 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT32X32: {
       ReinterpretingIDCT</*DCT_ROWS=*/4 * kBlockDim, /*DCT_COLS=*/4 * kBlockDim,
                          /*LF_ROWS=*/4, /*LF_COLS=*/4, /*ROWS=*/4, /*COLS=*/4>(
-          block, 4 * kBlockDim, dc, dc_stride);
+          block, 4 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT64X32: {
       ReinterpretingIDCT</*DCT_ROWS=*/8 * kBlockDim, /*DCT_COLS=*/4 * kBlockDim,
                          /*LF_ROWS=*/8, /*LF_COLS=*/4, /*ROWS=*/8, /*COLS=*/4>(
-          block, 8 * kBlockDim, dc, dc_stride);
+          block, 8 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT32X64: {
       ReinterpretingIDCT</*DCT_ROWS=*/4 * kBlockDim, /*DCT_COLS=*/8 * kBlockDim,
                          /*LF_ROWS=*/4, /*LF_COLS=*/8, /*ROWS=*/4, /*COLS=*/8>(
-          block, 8 * kBlockDim, dc, dc_stride);
+          block, 8 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT64X64: {
       ReinterpretingIDCT</*DCT_ROWS=*/8 * kBlockDim, /*DCT_COLS=*/8 * kBlockDim,
                          /*LF_ROWS=*/8, /*LF_COLS=*/8, /*ROWS=*/8, /*COLS=*/8>(
-          block, 8 * kBlockDim, dc, dc_stride);
+          block, 8 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT128X64: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/16 * kBlockDim, /*DCT_COLS=*/8 * kBlockDim,
           /*LF_ROWS=*/16, /*LF_COLS=*/8, /*ROWS=*/16, /*COLS=*/8>(
-          block, 16 * kBlockDim, dc, dc_stride);
+          block, 16 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT64X128: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/8 * kBlockDim, /*DCT_COLS=*/16 * kBlockDim,
           /*LF_ROWS=*/8, /*LF_COLS=*/16, /*ROWS=*/8, /*COLS=*/16>(
-          block, 16 * kBlockDim, dc, dc_stride);
+          block, 16 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT128X128: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/16 * kBlockDim, /*DCT_COLS=*/16 * kBlockDim,
           /*LF_ROWS=*/16, /*LF_COLS=*/16, /*ROWS=*/16, /*COLS=*/16>(
-          block, 16 * kBlockDim, dc, dc_stride);
+          block, 16 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT256X128: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/32 * kBlockDim, /*DCT_COLS=*/16 * kBlockDim,
           /*LF_ROWS=*/32, /*LF_COLS=*/16, /*ROWS=*/32, /*COLS=*/16>(
-          block, 32 * kBlockDim, dc, dc_stride);
+          block, 32 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT128X256: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/16 * kBlockDim, /*DCT_COLS=*/32 * kBlockDim,
           /*LF_ROWS=*/16, /*LF_COLS=*/32, /*ROWS=*/16, /*COLS=*/32>(
-          block, 32 * kBlockDim, dc, dc_stride);
+          block, 32 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT256X256: {
       ReinterpretingIDCT<
           /*DCT_ROWS=*/32 * kBlockDim, /*DCT_COLS=*/32 * kBlockDim,
           /*LF_ROWS=*/32, /*LF_COLS=*/32, /*ROWS=*/32, /*COLS=*/32>(
-          block, 32 * kBlockDim, dc, dc_stride);
+          block, 32 * kBlockDim, dc, dc_stride, scratch_space);
       break;
     }
     case Type::DCT:
@@ -813,8 +795,6 @@ HWY_MAYBE_UNUSED void DCFromLowestFrequencies(const AcStrategy::Type strategy,
     case Type::IDENTITY:
       dc[0] = block[0];
       break;
-    case Type::kNumValidStrategies:
-      JXL_ABORT("Invalid strategy");
   }
 }
 

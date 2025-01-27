@@ -7,17 +7,17 @@
 
 // To support webp, install libwebp-dev and rerun cmake.
 
-#include <string>
-
 #include "lib/jxl/base/status.h"
 #include "tools/benchmark/benchmark_args.h"
 #include "tools/benchmark/benchmark_codec.h"
 
-namespace jxl {
+namespace jpegxl {
+namespace tools {
 ImageCodec* CreateNewWebPCodec(const BenchmarkArgs& args);
 
 // Registers the webp-specific command line options.
 Status AddCommandLineOptionsWebPCodec(BenchmarkArgs* args);
-}  // namespace jxl
+}  // namespace tools
+}  // namespace jpegxl
 
 #endif  // TOOLS_BENCHMARK_BENCHMARK_CODEC_WEBP_H_

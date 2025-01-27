@@ -5,14 +5,25 @@
 
 #include "lib/jxl/render_pipeline/stage_to_linear.h"
 
+#include <cstddef>
+#include <cstdio>
+#include <memory>
+
+#include "lib/jxl/base/common.h"
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/matrix_ops.h"
+#include "lib/jxl/base/sanitizers.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/dec_xyb.h"
+#include "lib/jxl/render_pipeline/render_pipeline_stage.h"
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "lib/jxl/render_pipeline/stage_to_linear.cc"
 #include <hwy/foreach_target.h>
 #include <hwy/highway.h>
 
-#include "lib/jxl/dec_tone_mapping-inl.h"
-#include "lib/jxl/sanitizers.h"
-#include "lib/jxl/transfer_functions-inl.h"
+#include "lib/jxl/cms/tone_mapping-inl.h"
+#include "lib/jxl/cms/transfer_functions-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
@@ -22,58 +33,40 @@ namespace {
 // These templates are not found via ADL.
 using hwy::HWY_NAMESPACE::IfThenZeroElse;
 
-template <typename Op>
-struct PerChannelOp {
-  explicit PerChannelOp(Op op) : op(op) {}
-  template <typename D, typename T>
-  void Transform(D d, T* r, T* g, T* b) const {
-    *r = op.Transform(d, *r);
-    *g = op.Transform(d, *g);
-    *b = op.Transform(d, *b);
-  }
-
-  Op op;
-};
-template <typename Op>
-PerChannelOp<Op> MakePerChannelOp(Op&& op) {
-  return PerChannelOp<Op>(std::forward<Op>(op));
-}
-
 struct OpLinear {
   template <typename D, typename T>
-  T Transform(D d, const T& encoded) const {
-    return encoded;
-  }
+  void Transform(D d, T* r, T* g, T* b) const {}
 };
 
 struct OpRgb {
   template <typename D, typename T>
-  T Transform(D d, const T& encoded) const {
-    return TF_SRGB().DisplayFromEncoded(encoded);
+  void Transform(D d, T* r, T* g, T* b) const {
+    for (T* val : {r, g, b}) {
+      *val = TF_SRGB().DisplayFromEncoded(*val);
+    }
   }
 };
 
 struct OpPq {
+  explicit OpPq(const float intensity_target) : tf_pq_(intensity_target) {}
   template <typename D, typename T>
-  T Transform(D d, const T& encoded) const {
-    return TF_PQ().DisplayFromEncoded(d, encoded);
+  void Transform(D d, T* r, T* g, T* b) const {
+    for (T* val : {r, g, b}) {
+      *val = tf_pq_.DisplayFromEncoded(d, *val);
+    }
   }
+  TF_PQ tf_pq_;
 };
 
 struct OpHlg {
-  explicit OpHlg(const float luminances[3], const float intensity_target)
+  explicit OpHlg(const Vector3& luminances, const float intensity_target)
       : hlg_ootf_(HlgOOTF::FromSceneLight(
             /*display_luminance=*/intensity_target, luminances)) {}
 
   template <typename D, typename T>
   void Transform(D d, T* r, T* g, T* b) const {
     for (T* val : {r, g, b}) {
-      HWY_ALIGN float vals[MaxLanes(d)];
-      Store(*val, d, vals);
-      for (size_t i = 0; i < Lanes(d); ++i) {
-        vals[i] = TF_HLG().DisplayFromEncoded(vals[i]);
-      }
-      *val = Load(d, vals);
+      *val = TF_HLG().DisplayFromEncoded(d, *val);
     }
     hlg_ootf_.Apply(r, g, b);
   }
@@ -82,17 +75,21 @@ struct OpHlg {
 
 struct Op709 {
   template <typename D, typename T>
-  T Transform(D d, const T& encoded) const {
-    return TF_709().DisplayFromEncoded(d, encoded);
+  void Transform(D d, T* r, T* g, T* b) const {
+    for (T* val : {r, g, b}) {
+      *val = TF_709().DisplayFromEncoded(d, *val);
+    }
   }
 };
 
 struct OpGamma {
   const float gamma;
   template <typename D, typename T>
-  T Transform(D d, const T& encoded) const {
-    return IfThenZeroElse(Le(encoded, Set(d, 1e-5f)),
-                          FastPowf(d, encoded, Set(d, gamma)));
+  void Transform(D d, T* r, T* g, T* b) const {
+    for (T* val : {r, g, b}) {
+      *val = IfThenZeroElse(Le(*val, Set(d, 1e-5f)),
+                            FastPowf(d, *val, Set(d, gamma)));
+    }
   }
 };
 
@@ -104,18 +101,16 @@ struct OpInvalid {
 template <typename Op>
 class ToLinearStage : public RenderPipelineStage {
  public:
-  explicit ToLinearStage(Op op)
+  explicit ToLinearStage(Op&& op)
       : RenderPipelineStage(RenderPipelineStage::Settings()),
         op_(std::move(op)) {}
 
   explicit ToLinearStage()
       : RenderPipelineStage(RenderPipelineStage::Settings()), valid_(false) {}
 
-  void ProcessRow(const RowInfo& input_rows, const RowInfo& output_rows,
-                  size_t xextra, size_t xsize, size_t xpos, size_t ypos,
-                  size_t thread_id) const final {
-    PROFILER_ZONE("ToLinear");
-
+  Status ProcessRow(const RowInfo& input_rows, const RowInfo& output_rows,
+                    size_t xextra, size_t xsize, size_t xpos, size_t ypos,
+                    size_t thread_id) const final {
     const HWY_FULL(float) d;
     const size_t xsize_v = RoundUpTo(xsize, Lanes(d));
     float* JXL_RESTRICT row0 = GetInputRow(input_rows, 0, 0);
@@ -127,7 +122,8 @@ class ToLinearStage : public RenderPipelineStage {
     msan::UnpoisonMemory(row0 + xsize, sizeof(float) * (xsize_v - xsize));
     msan::UnpoisonMemory(row1 + xsize, sizeof(float) * (xsize_v - xsize));
     msan::UnpoisonMemory(row2 + xsize, sizeof(float) * (xsize_v - xsize));
-    for (ssize_t x = -xextra; x < (ssize_t)(xsize + xextra); x += Lanes(d)) {
+    for (ssize_t x = -xextra; x < static_cast<ssize_t>(xsize + xextra);
+         x += Lanes(d)) {
       auto r = LoadU(d, row0 + x);
       auto g = LoadU(d, row1 + x);
       auto b = LoadU(d, row2 + x);
@@ -139,6 +135,7 @@ class ToLinearStage : public RenderPipelineStage {
     msan::PoisonMemory(row0 + xsize, sizeof(float) * (xsize_v - xsize));
     msan::PoisonMemory(row1 + xsize, sizeof(float) * (xsize_v - xsize));
     msan::PoisonMemory(row2 + xsize, sizeof(float) * (xsize_v - xsize));
+    return true;
   }
 
   RenderPipelineChannelMode GetChannelMode(size_t c) const final {
@@ -162,21 +159,20 @@ std::unique_ptr<ToLinearStage<Op>> MakeToLinearStage(Op&& op) {
 
 std::unique_ptr<RenderPipelineStage> GetToLinearStage(
     const OutputEncodingInfo& output_encoding_info) {
-  if (output_encoding_info.color_encoding.tf.IsLinear()) {
-    return MakeToLinearStage(MakePerChannelOp(OpLinear()));
-  } else if (output_encoding_info.color_encoding.tf.IsSRGB()) {
-    return MakeToLinearStage(MakePerChannelOp(OpRgb()));
-  } else if (output_encoding_info.color_encoding.tf.IsPQ()) {
-    return MakeToLinearStage(MakePerChannelOp(OpPq()));
-  } else if (output_encoding_info.color_encoding.tf.IsHLG()) {
+  const auto& tf = output_encoding_info.color_encoding.Tf();
+  if (tf.IsLinear()) {
+    return MakeToLinearStage(OpLinear());
+  } else if (tf.IsSRGB()) {
+    return MakeToLinearStage(OpRgb());
+  } else if (tf.IsPQ()) {
+    return MakeToLinearStage(OpPq(output_encoding_info.orig_intensity_target));
+  } else if (tf.IsHLG()) {
     return MakeToLinearStage(OpHlg(output_encoding_info.luminances,
                                    output_encoding_info.orig_intensity_target));
-  } else if (output_encoding_info.color_encoding.tf.Is709()) {
-    return MakeToLinearStage(MakePerChannelOp(Op709()));
-  } else if (output_encoding_info.color_encoding.tf.IsGamma() ||
-             output_encoding_info.color_encoding.tf.IsDCI()) {
-    return MakeToLinearStage(
-        MakePerChannelOp(OpGamma{1.f / output_encoding_info.inverse_gamma}));
+  } else if (tf.Is709()) {
+    return MakeToLinearStage(Op709());
+  } else if (tf.have_gamma || tf.IsDCI()) {
+    return MakeToLinearStage(OpGamma{1.f / output_encoding_info.inverse_gamma});
   } else {
     return jxl::make_unique<ToLinearStage<OpInvalid>>();
   }

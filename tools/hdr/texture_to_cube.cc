@@ -3,16 +3,25 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 
 #include "lib/extras/codec.h"
-#include "lib/jxl/base/thread_pool_internal.h"
-#include "tools/args.h"
+#include "lib/jxl/base/common.h"
+#include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/span.h"
+#include "lib/jxl/codec_in_out.h"
+#include "lib/jxl/image_bundle.h"
 #include "tools/cmdline.h"
+#include "tools/file_io.h"
+#include "tools/no_memory_manager.h"
+#include "tools/thread_pool_internal.h"
 
 int main(int argc, const char** argv) {
-  jxl::ThreadPoolInternal pool;
+  jpegxl::tools::ThreadPoolInternal pool;
 
   jpegxl::tools::CommandLineParser parser;
   const char* input_filename = nullptr;
@@ -41,15 +50,18 @@ int main(int argc, const char** argv) {
     return EXIT_FAILURE;
   }
 
-  jxl::CodecInOut image;
-  JXL_CHECK(jxl::SetFromFile(input_filename, jxl::extras::ColorHints(), &image,
-                             &pool));
+  auto image =
+      jxl::make_unique<jxl::CodecInOut>(jpegxl::tools::NoMemoryManager());
+  std::vector<uint8_t> encoded;
+  JPEGXL_TOOLS_CHECK(jpegxl::tools::ReadFile(input_filename, &encoded));
+  JPEGXL_TOOLS_CHECK(jxl::SetFromBytes(
+      jxl::Bytes(encoded), jxl::extras::ColorHints(), image.get(), pool.get()));
 
-  JXL_CHECK(image.xsize() == image.ysize() * image.ysize());
-  const unsigned N = image.ysize();
+  JPEGXL_TOOLS_CHECK(image->xsize() == image->ysize() * image->ysize());
+  const unsigned N = image->ysize();
 
   FILE* const output = fopen(output_filename, "wb");
-  JXL_CHECK(output);
+  JPEGXL_TOOLS_CHECK(output);
 
   fprintf(output, "# Created by libjxl\n");
   fprintf(output, "LUT_3D_SIZE %u\n", N);
@@ -59,13 +71,14 @@ int main(int argc, const char** argv) {
     for (size_t g = 0; g < N; ++g) {
       const size_t y = g;
       const float* const JXL_RESTRICT rows[3] = {
-          image.Main().color()->ConstPlaneRow(0, y) + N * b,
-          image.Main().color()->ConstPlaneRow(1, y) + N * b,
-          image.Main().color()->ConstPlaneRow(2, y) + N * b};
+          image->Main().color()->ConstPlaneRow(0, y) + N * b,
+          image->Main().color()->ConstPlaneRow(1, y) + N * b,
+          image->Main().color()->ConstPlaneRow(2, y) + N * b};
       for (size_t r = 0; r < N; ++r) {
         const size_t x = r;
         fprintf(output, "%.6f %.6f %.6f\n", rows[0][x], rows[1][x], rows[2][x]);
       }
     }
   }
+  return EXIT_SUCCESS;
 }

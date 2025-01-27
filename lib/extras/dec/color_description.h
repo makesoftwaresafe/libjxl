@@ -6,9 +6,11 @@
 #ifndef LIB_EXTRAS_COLOR_DESCRIPTION_H_
 #define LIB_EXTRAS_COLOR_DESCRIPTION_H_
 
+#include <jxl/color_encoding.h>
+
 #include <string>
 
-#include "jxl/color_encoding.h"
+#include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/status.h"
 
 namespace jxl {

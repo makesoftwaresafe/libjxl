@@ -8,18 +8,20 @@
 
 // Decodes JPEG XL images in memory.
 
-#include <stdint.h>
+#include <jxl/memory_manager.h>
+#include <jxl/parallel_runner.h>
+#include <jxl/types.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
 
-#include "jxl/parallel_runner.h"
-#include "jxl/types.h"
-#include "lib/extras/packed_image.h"
-
 namespace jxl {
 namespace extras {
+
+class PackedPixelFile;
 
 struct JXLDecompressParams {
   // If empty, little endian float formats will be accepted.
@@ -37,6 +39,9 @@ struct JXLDecompressParams {
   // If runner_opaque is set, the decoder uses this parallel runner.
   JxlParallelRunner runner;
   void* runner_opaque = nullptr;
+
+  // If memory_manager is set, decoder uses it.
+  JxlMemoryManager* memory_manager = nullptr;
 
   // Whether truncated input should be treated as an error.
   bool allow_partial_input = false;

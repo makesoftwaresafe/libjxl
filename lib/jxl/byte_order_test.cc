@@ -5,7 +5,9 @@
 
 #include "lib/jxl/base/byte_order.h"
 
-#include "gtest/gtest.h"
+#include <cstdint>
+
+#include "lib/jxl/testing.h"
 
 namespace jxl {
 namespace {

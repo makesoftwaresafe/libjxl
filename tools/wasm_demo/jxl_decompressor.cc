@@ -5,11 +5,20 @@
 
 #include "tools/wasm_demo/jxl_decompressor.h"
 
+#include <jxl/color_encoding.h>
+#include <jxl/thread_parallel_runner.h>
+#include <jxl/thread_parallel_runner_cxx.h>
+#include <jxl/types.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 
-#include "jxl/thread_parallel_runner_cxx.h"
 #include "lib/extras/dec/jxl.h"
+#include "lib/extras/packed_image.h"
 #include "tools/wasm_demo/no_png.h"
 
 extern "C" {
@@ -22,7 +31,44 @@ struct DecompressorOutputPrivate {
   DecompressorOutput output;
 };
 
+void MaybeMakeCicp(const jxl::extras::PackedPixelFile& ppf,
+                   std::vector<uint8_t>* cicp) {
+  cicp->clear();
+  const JxlColorEncoding& clr = ppf.color_encoding;
+  uint8_t color_primaries = 0;
+  uint8_t transfer_function = static_cast<uint8_t>(clr.transfer_function);
+
+  if (clr.color_space != JXL_COLOR_SPACE_RGB) {
+    return;
+  }
+  if (clr.primaries == JXL_PRIMARIES_P3) {
+    if (clr.white_point == JXL_WHITE_POINT_D65) {
+      color_primaries = 12;
+    } else if (clr.white_point == JXL_WHITE_POINT_DCI) {
+      color_primaries = 11;
+    } else {
+      return;
+    }
+  } else if (clr.primaries != JXL_PRIMARIES_CUSTOM &&
+             clr.white_point == JXL_WHITE_POINT_D65) {
+    color_primaries = static_cast<uint8_t>(clr.primaries);
+  } else {
+    return;
+  }
+  if (clr.transfer_function == JXL_TRANSFER_FUNCTION_UNKNOWN ||
+      clr.transfer_function == JXL_TRANSFER_FUNCTION_GAMMA) {
+    return;
+  }
+
+  cicp->resize(4);
+  cicp->at(0) = color_primaries;    // Colour Primaries
+  cicp->at(1) = transfer_function;  // Transfer Function
+  cicp->at(2) = 0;                  // Matrix Coefficients
+  cicp->at(3) = 1;                  // Video Full Range Flag
+}
+
 }  // namespace
+
 DecompressorOutput* jxlDecompress(const uint8_t* input, size_t input_size) {
   DecompressorOutputPrivate* self = new DecompressorOutputPrivate();
 
@@ -33,15 +79,16 @@ DecompressorOutput* jxlDecompress(const uint8_t* input, size_t input_size) {
   auto report_error = [&](uint32_t code, const char* text) {
     fprintf(stderr, "%s\n", text);
     delete self;
-    return reinterpret_cast<DecompressorOutput*>(code);
+    return reinterpret_cast<DecompressorOutput*>(code);  // NOLINT
   };
 
   auto thread_pool = JxlThreadParallelRunnerMake(nullptr, 4);
   void* runner = thread_pool.get();
 
   jxl::extras::JXLDecompressParams dparams;
-  dparams.accepted_formats.push_back(
-      {/* num_channels */ 3, JXL_TYPE_UINT8, JXL_LITTLE_ENDIAN, /* align */ 0});
+  JxlPixelFormat format = {/* num_channels */ 3, JXL_TYPE_UINT16,
+                           JXL_BIG_ENDIAN, /* align */ 0};
+  dparams.accepted_formats.push_back(format);
   dparams.runner = JxlThreadParallelRunner;
   dparams.runner_opaque = runner;
   jxl::extras::PackedPixelFile ppf;
@@ -52,21 +99,15 @@ DecompressorOutput* jxlDecompress(const uint8_t* input, size_t input_size) {
 
   // Just 1-st frame.
   const auto& image = ppf.frames[0].color;
+  std::vector<uint8_t> cicp;
+  MaybeMakeCicp(ppf, &cicp);
   self->output.data = WrapPixelsToPng(
-      image.xsize, image.ysize, /* bit_depth */ 8,
+      image.xsize, image.ysize, (format.data_type == JXL_TYPE_UINT16) ? 16 : 8,
       /* has_alpha */ false, reinterpret_cast<const uint8_t*>(image.pixels()),
-      &self->output.size);
+      ppf.icc, cicp, &self->output.size);
   if (!self->output.data) {
     return report_error(2, "failed to encode png");
   }
-
-  // jxl::extras::EncodedImage encoded_image;
-  // if (!encoder->Encode(ppf, &encoded_image)) {
-  //   return report_error(2, "failed to encode png");
-  // }
-  //  self->bitstream.swap(encoded_image.bitstreams[0]);
-  //  self->output.size = self->bitstream.size();
-  //  self->output.data = self->bitstream.data();
 
   return &self->output;
 }

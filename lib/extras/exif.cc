@@ -5,6 +5,9 @@
 
 #include "lib/extras/exif.h"
 
+#include <cstdint>
+#include <vector>
+
 #include "lib/jxl/base/byte_order.h"
 
 namespace jxl {
@@ -23,7 +26,7 @@ void ResetExifOrientation(std::vector<uint8_t>& exif) {
     return;  // not a valid tiff header
   }
   t += 4;
-  uint32_t offset = (bigendian ? LoadBE32(t) : LoadLE32(t));
+  uint64_t offset = (bigendian ? LoadBE32(t) : LoadLE32(t));
   if (exif.size() < 12 + offset + 2 || offset < 8) return;
   t += offset - 4;
   uint16_t nb_tags = (bigendian ? LoadBE16(t) : LoadLE16(t));

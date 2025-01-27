@@ -11,12 +11,15 @@ on:
     branches:
       - ci-*-debug
 
+permissions:
+  contents: read
+
 jobs:
   cross_compile_ubuntu:
-    name: Cross-compiling ${{ matrix.build_target }} ${{ matrix.variant }} 
-    runs-on: [ubuntu-22.04]
+    name: Cross-compiling ${{ matrix.build_target }} ${{ matrix.variant }}
+    runs-on: [ubuntu-latest]
     container:
-      image: debian:bullseye
+      image: debian:bookworm
     strategy:
       fail-fast: false
       matrix:
@@ -28,10 +31,16 @@ jobs:
       BUILD_DIR: build
 
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.4
+      with:
+        egress-policy: audit
+
     - name: Setup apt
       shell: bash
       run: |
         set -x
+        rm -f /var/lib/man-db/auto-update
         apt-get update -y
         apt-get install -y ca-certificates debian-ports-archive-keyring
 
@@ -60,6 +69,7 @@ jobs:
       shell: bash
       run: |
         set -x
+        rm -f /var/lib/man-db/auto-update
         apt update
         pkgs=(
           # Build dependencies
@@ -94,10 +104,6 @@ jobs:
           # GTK plugins
           libgdk-pixbuf2.0-dev:${{ matrix.arch }}
           libgtk2.0-dev:${{ matrix.arch }}
-
-          # QT
-          libqt5x11extras5-dev:${{ matrix.arch }}
-          qtbase5-dev:${{ matrix.arch }}
         )
         if [[ "${{ matrix.build_target }}" != "x86_64-linux-gnu" ]]; then
           pkgs+=(
@@ -118,21 +124,22 @@ jobs:
         echo "CC=${{ matrix.c_compiler || 'clang-11' }}" >> $GITHUB_ENV
         echo "CXX=${{ matrix.cxx_compiler || 'clang++-11' }}" >> $GITHUB_ENV
     - name: Checkout the source
-      uses: actions/checkout@v2
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       with:
         submodules: true
         fetch-depth: 1
-    - name: Build
+    - name: Configure
       run: |
         CMAKE_FLAGS="${{ matrix.cmake_flags }}" ./ci.sh release \
           -DJPEGXL_FORCE_SYSTEM_BROTLI=ON \
           -DJPEGXL_ENABLE_JNI=OFF \
           ${{ join(matrix.cmake_args, ' ') }}
       env:
-        SKIP_TEST: 1
+        SKIP_BUILD: 1
         BUILD_TARGET: ${{ matrix.build_target }}
     - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v3
+      uses: mxschmitt/action-tmate@e5c7151931ca95bad1c6f4190c730ecf8c7dde48 # v3.19
+      timeout-minutes: 15
 
 
 
